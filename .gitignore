@@ -13,3 +13,4 @@ segtopcg/*.json
 utils/utils_skeletons.py
 
 __pycache__
+.vscode/settings.json
