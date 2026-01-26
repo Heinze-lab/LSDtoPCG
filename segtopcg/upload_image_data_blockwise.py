@@ -121,10 +121,11 @@ def upload_image_data_blockwise(image_data_file,
         traceback.print_exc()
         sys.exit()
 
+    logging.info(f'Bucket: {image_data_dir}')
     logging.info(f'Volume bounds: {vol.bounds}') 
-    logging.info(f'Starting upload...') 
+    logging.info(f'Starting upload...')
     
-    chunk_size = Coordinate(destination_chunk_voxel_size[::-1])*Coordinate([4,4,2])*image_data.voxel_size
+    chunk_size = Coordinate(destination_chunk_voxel_size[::-1])*image_data.voxel_size
     # Start blockwise translation and upload
     task = daisy.Task(
                 task_id = f'upload_image_data_{db_name}',
@@ -207,6 +208,11 @@ def upload_image_data_worker(image_data_file,
             start = time.time()    
             
             data = image_data.to_ndarray(block.read_roi)
+
+            mask_data = open_ds(image_data_file, 'mask')
+            mask_data = mask_data.to_ndarray(block.read_roi)
+
+            data = data * mask_data
             
             # Upload data
             try:
