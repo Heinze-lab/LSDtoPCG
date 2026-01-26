@@ -118,7 +118,7 @@ def test(config, n_trials=1, view_seg=False):
 
 if __name__ == '__main__':
 
-    parser=argparse.ArgumentParser('')
+    parser=argparse.ArgumentParser('Script for testing that data was correctly uploaded.')
     parser.add_argument('-cfg', '--config',
                         metavar='CONFIG',
                         dest='config',
@@ -135,7 +135,7 @@ if __name__ == '__main__':
     parser.add_argument('-v', '--view_seg',
                         dest='view_seg',
                         action='store_true',
-                        help='Whether to view the chunk with neuroglancer')
+                        help='Whether to view chunks with neuroglancer')
     args=parser.parse_args()
 
     test(**vars(args))
