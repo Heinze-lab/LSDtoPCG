@@ -1,4 +1,4 @@
-from segtopcg.utils.utils_supervoxel import get_nbit_chunk_coord, get_chunk_coord, get_segId, get_chunkId, get_chunk_list
+from segtopcg.utils.utils_supervoxel import get_chunkId, get_chunk_list
 from segtopcg.utils.utils_components import *
 
 import traceback

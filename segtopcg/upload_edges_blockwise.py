@@ -418,7 +418,6 @@ def translate_edges_worker(db_host,
                                     .merge(split_fragments.loc[split_fragments.graphene_chunk_id == main_chunk_id], 'left', left_on='initial_id', right_on='initial_id') \
                                     .rename(columns={'graphene_id_x': 'v_graphene_id', 'graphene_id_y': 'u_graphene_id'})
 
-
             cross_chunk_edges = Edges(*cross_edges_df[['u_graphene_id', 'v_graphene_id']].to_numpy(dtype=np.uint64).T)
             cross_chunk_edges.affinities = np.repeat(np.float32('inf'), len(cross_edges_df))
 
