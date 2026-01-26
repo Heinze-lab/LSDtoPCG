@@ -1,4 +1,4 @@
-from segtopcg.utils.utils_supervoxel import get_nbit_chunk_coord, get_chunk_coord, get_segId, get_chunkId
+from segtopcg.utils.utils_supervoxel import get_nbit_chunk_coord, get_chunk_coord, get_chunkId
 from segtopcg.utils.utils_local import write_chunk_edges_local
 
 import daisy
@@ -16,8 +16,7 @@ from cloudfiles import CloudFiles
 from datetime import date
 from funlib.geometry import Roi, Coordinate
 from funlib.persistence import open_ds
-from pychunkedgraph.io.edges import put_chunk_edges, get_chunk_edges
-from pychunkedgraph.io.components import put_chunk_components
+from pychunkedgraph.io.edges import put_chunk_edges
 from pychunkedgraph.graph.edges import Edges
 from pychunkedgraph.graph.edges import EDGE_TYPES
 
@@ -263,8 +262,6 @@ def translate_edges_worker(db_host,
 
     client = pymongo.MongoClient(db_host)
     db = client[db_name]
-
-    total_offset = total_roi.get_begin()
 
     trs_coll = db['ids_to_graphene']
     blocks_in_PCG = db['blocks_edges_in_PCG']
