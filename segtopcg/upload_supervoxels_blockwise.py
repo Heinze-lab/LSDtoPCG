@@ -122,7 +122,8 @@ def supervoxel_to_graphene_blockwise(fragments_file,
     # Initiate CloudVolume object
     try:
         logging.info('Volume will be uploaded to the cloud')
-        logging.info('Initializing CloudVolume...')
+        voxel_offset = (fragments.roi.get_begin()//fragments.voxel_size)[::-1]
+        logging.info(f'Initializing CloudVolume with voxel offset: {voxel_offset}')
         destination_chunk_size = np.array(chunk_size)[::-1]/2/np.array(fragments.voxel_size)[::-1] # xyz
 
         info = CloudVolume.create_new_info(
@@ -131,7 +132,7 @@ def supervoxel_to_graphene_blockwise(fragments_file,
                                data_type = 'uint64',
                                encoding = 'compressed_segmentation',
                                resolution = fragments.voxel_size[::-1], # x,y,z voxel_size
-                               voxel_offset = (fragments.roi.get_begin()//fragments.voxel_size)[::-1], # x,y,z offset in voxel
+                               voxel_offset = voxel_offset, # x,y,z offset in voxel
                                mesh = 'mesh',
                                chunk_size = destination_chunk_size,
                                volume_size = fragments.shape[::-1]) # x,y,z shape in voxel
@@ -282,7 +283,7 @@ def upload_supervoxels_worker(fragments_file,
             try:
                 z1,y1,x1 = block.read_roi.get_begin()//fragments.voxel_size 
                 z2,y2,x2 = block.read_roi.get_end()//fragments.voxel_size
-                vol[x1:x2, y1:y2, z1:z2] = np.transpose(graphene_data, (2,1,0))
+                vol[x1:x2, y1:y2, z1:z2] = np.transpose(graphene_data, (2,1,0)) # zyx to xyz
             except Exception as e:
                 print(f'Error: {e}')
                 traceback.print_exc()
