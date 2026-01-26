@@ -40,7 +40,7 @@ def read_chunk_edges_local(edges_dir,
     
     fnames = []
     for chunk_coords in chunks_coordinates:
-        chunk_str = "_".join(str(coord) for coord in chunk_coords)
+        chunk_str = '_'.join(str(coord) for coord in chunk_coords)
         # filename format - edges_x_y_z.serialization.compression
         fnames.append(f'{edges_dir}/edges_{chunk_str}.proto.zst')
 
