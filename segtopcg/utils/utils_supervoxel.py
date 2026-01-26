@@ -2,7 +2,6 @@ import daisy
 import numpy as np    
 
 from funlib.persistence import open_ds
-from funlib.segment.arrays.replace_values import replace_values
 
 
 def get_segId(frag_ids,
@@ -204,8 +203,7 @@ def get_nbit_chunk_coord(fragments, chunk_size):
     # Computes how many chunks fit in each dimensions
     chunk_shape = np.array(chunk_size) / np.array(fragments.voxel_size)
     
-    div = np.array(fragments.shape)/np.array(chunk_shape)
-    result = np.ceil(div)-1 # minus 1 because chunk_coord starts at 0
+    div = np.array(fragments.shape)//np.array(chunk_shape)
     
     # Return max number of chunks that can be represented
-    return int(max(result)).bit_length()
+    return int(max(div)).bit_length()
