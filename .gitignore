@@ -5,6 +5,7 @@ config/
 config_templates/generate_config.py
 temp/
 notebooks/
+build/
 
 daisy_logs/
 
