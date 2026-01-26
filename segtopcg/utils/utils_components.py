@@ -1,24 +1,11 @@
-from segtopcg.utils.utils_supervoxel import get_nbit_chunk_coord, get_chunk_coord, get_segId, get_chunkId
 from segtopcg.utils.utils_local import read_chunk_edges_local
 
-import daisy
 import json
 import logging
 import numpy as np
-import networkx as nx
-import pymongo
 import sys
 import time
 
-from cloudfiles import CloudFiles
-from collections import defaultdict
-from datetime import date
-from funlib.segment.arrays.replace_values import replace_values
-from multiprocessing import Pool
-from pychunkedgraph.io.edges import put_chunk_edges
-from pychunkedgraph.io.components import put_chunk_components
-from pychunkedgraph.graph.edges import Edges
-from pychunkedgraph.graph.edges import EDGE_TYPES
 
 logging.basicConfig(level=logging.INFO)
 
@@ -122,7 +109,6 @@ def get_adjacent_chunk_coords(chunk_coords,
         
     return adj_chunk_coords_list[mask]
     
-    
 
 def get_main_chunk_edges(edges_dir, 
                          main_chunk_coords, 
@@ -183,9 +169,7 @@ def get_main_chunk_edges(edges_dir,
     
 
 def check_block(coll, chunk_coord):
-
-    done = coll.count_documents({'graphene_chunk_coord': chunk_coord.tolist()}) >=1
-
+    return coll.count_documents({'graphene_chunk_coord': chunk_coord.tolist()}) >=1
 
 def isolate_chunks(mode,
                    chunk_list,
@@ -223,20 +207,3 @@ def isolate_chunks(mode,
     else:
         print('No other mode was implemented for isolation yet.')
         sys.exit()
-
-
-if __name__ == '__main__':
-    
-    config_file = sys.argv[1]
-
-    with open(config_file, 'r') as f:
-        config = json.load(f)
-
-    start = time.time()
-
-    upload_to_cloud(**config)
-
-    end = time.time()
-
-    seconds = end - start
-    logging.info(f'Total time to translate edges: {seconds}')
