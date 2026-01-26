@@ -13,7 +13,6 @@ import sys
 import time
 
 from cloudfiles import CloudFiles
-from collections import defaultdict
 from datetime import date
 from funlib.geometry import Coordinate
 from funlib.persistence import open_ds
@@ -21,6 +20,17 @@ from multiprocessing import Pool
 from pychunkedgraph.io.components import put_chunk_components
 
 logging.basicConfig(level=logging.INFO)
+
+
+def pairwise(iterable):
+    # pairwise('ABCDEFG') → AB BC CD DE EF FG
+
+    iterator = iter(iterable)
+    a = next(iterator, None)
+
+    for b in iterator:
+        yield a, b
+        a = b
 
 
 def upload_components_chunkwise(
@@ -256,12 +266,22 @@ def connected_components_to_cloud_worker(chunk_coord,
         # If this is a re-ingest of a dataset that was worked on previously
         # Requires to have ran download_components_progress.py
         main_chunk_id = get_chunkId(bits_per_chunk_dim, chunk_coord=main_chunk[::-1])
-        progress = db['info_progress_save'].find_one({'chunk_id': int(main_chunk_id)})
-        if progress is not None:
-            components = progress['components']
+        adj_chunk_ids = [get_chunkId(bits_per_chunk_dim, chunk_coord=c[::-1]) for c in adj_chunk_list]
+        chunk_ids = [int(i) for i in [main_chunk_id] + adj_chunk_ids]
+        progress = list(db['info_progress_save'].find({'chunk_id': {'$in': chunk_ids}}))
+
+        if len(progress) > 0:
+            # Need to connect components between chunks or they may get separated
+            progress_edges = []
+            for doc in progress:
+                for c in doc['components']:
+                    progress_edges += list(pairwise(c))
+            G = nx.Graph()
+            G.add_edges_from(progress_edges)
+            components += [list(c) for c in nx.connected_components(G)]
 
             # Remove these components from edges so that they don't mixed up
-            dump_nodes = np.concatenate(components).astype(np.uint64)
+            dump_nodes = np.unique(np.concatenate(components)).astype(np.uint64)
             mask = ~np.isin(edges, dump_nodes).any(1)
             edges = edges[mask]
             scores = scores[mask]
@@ -274,11 +294,10 @@ def connected_components_to_cloud_worker(chunk_coord,
         # Get connected components
         G = nx.Graph()
         G.add_edges_from(thresh_edges)
-        
-        # Nodes include even thresholded edges because they exist but are isolated
-        nodes = np.unique(edges)
 
-        G.add_nodes_from(nodes) # Include isolated nodes
+        # Nodes include even thresholded edges because they exist but are isolated, but not nodes from progress data
+        nodes = np.unique(edges) 
+        G.add_nodes_from(nodes) 
         components += [list(map(int, c)) for c in list(nx.connected_components(G))]
    
     # Upload
