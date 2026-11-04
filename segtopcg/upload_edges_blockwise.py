@@ -19,6 +19,10 @@ from funlib.persistence import open_ds
 from pychunkedgraph.io.edges import put_chunk_edges
 from pychunkedgraph.graph.edges import Edges
 from pychunkedgraph.graph.edges import EDGE_TYPES
+from bson.errors import InvalidDocument
+from pymongo.errors import OperationFailure, DocumentTooLarge
+
+QUERY_TOO_BIG = (InvalidDocument, OperationFailure, DocumentTooLarge)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -39,7 +43,8 @@ def edges_to_graphene_blockwise(fragments_file,
                                 write_local=True,
                                 overwrite=False,
                                 start_over=False,
-                                edges_dir_cloud='edges'
+                                edges_dir_cloud='edges',
+                                upload=True
                                ):
     
     '''
@@ -97,29 +102,33 @@ def edges_to_graphene_blockwise(fragments_file,
         
             Name of the edges directory in the cloud bucket. "edges" by default.
     '''
-    
-    # Check that folder exists at cloudpath. If not, fragments have not been uploaded yet or could be a typo.
-    bucket = CloudFiles(cloudpath[:cloudpath.rfind('/')])
-    if not bucket.isdir(cloudpath[cloudpath.rfind('/')+1:]):
-        print(f'Bucket does not exist at provided location: {cloudpath}')
-        print('Aborting.')
-        sys.exist()
+
+    assert upload or write_local, 'Either upload edges or write them locally, or both'
 
     if write_local:
         assert os.path.exists(edges_dir_local), 'Edges directory does not exist'
         edges_dir_local = os.path.join(edges_dir_local, db_name)
         os.makedirs(edges_dir_local, exist_ok=True)
 
-    cf = CloudFiles(cloudpath)
-    edges_dir_cloud = '/'.join([cf.cloudpath, edges_dir_cloud])
-    
-    # Check if edges already exist at destination
-    if cf.isdir(edges_dir_cloud):
-        if overwrite:
-            print(f'Edges already exist at path {cloudpath}')
-            print('Edges will be overwritten')
-        else:
-            raise RuntimeError(f'Edges already exist at path {cloudpath}')
+    if upload:
+        # Check that folder exists at cloudpath. If not, fragments have not been uploaded yet or could be a typo.
+        bucket = CloudFiles(cloudpath[:cloudpath.rfind('/')])
+        if not bucket.isdir(cloudpath[cloudpath.rfind('/')+1:]):
+            print(f'Bucket does not exist at provided location: {cloudpath}')
+            print('Aborting.')
+            sys.exit()
+
+        # Check if edges already exist at destination
+        cf = CloudFiles(cloudpath)
+        edges_dir_cloud = '/'.join([cf.cloudpath, edges_dir_cloud])
+        if cf.isdir(edges_dir_cloud):
+            if overwrite:
+                print(f'Edges already exist at path {cloudpath}')
+                print('Edges will be overwritten')
+            else:
+                raise RuntimeError(f'Edges already exist at path {cloudpath}')
+    else:
+        edges_dir_cloud = None
             
     fragments = open_ds(fragments_file, 'frags')
     chunk_size = Coordinate(chunk_voxel_size) * fragments.voxel_size
@@ -169,7 +178,8 @@ def edges_to_graphene_blockwise(fragments_file,
                                                     edges_dir_cloud,
                                                     edges_dir_local,              
                                                     write_local,
-                                                    num_workers),
+                                                    num_workers,
+                                                    upload),
                 check_function = lambda b: check_block(
                                                     blocks_in_PCG,
                                                     b),
@@ -204,7 +214,8 @@ def translate_edges_worker(db_host,
                            edges_dir_local,
                            write_local,
                            num_workers,
-                           block = None
+                           upload=True,
+                           block=None
                           ):
 
     
@@ -307,11 +318,12 @@ def translate_edges_worker(db_host,
                                             'graphene_chunk_id':1, 
                                             'initial_ids':1, 
                                             'graphene_ids':1}))
-            except:
+            except QUERY_TOO_BIG:
+                logging.warning(f'Chunk {chunk_coord}: LUT query too large, splitting per chunk')
                 # Query size might exceed mongodb limit, so we split it
                 query = []
                 for chunk in chunk_ids:
-                    query += list(trs_coll.find({'graphene_chunk_id':{'$in':chunk}},
+                    query += list(trs_coll.find({'graphene_chunk_id': int(chunk)},
                                                 {'_id':0,
                                                  'graphene_chunk_id':1, 
                                                  'initial_ids':1, 
@@ -321,8 +333,15 @@ def translate_edges_worker(db_host,
             for dic in query:
                 nodes_info.append(np.vstack([np.repeat(dic['graphene_chunk_id'], len(dic['initial_ids'])), dic['initial_ids'], dic['graphene_ids']]).T)
 
-            translation_table = pd.DataFrame(np.vstack(nodes_info), columns=['graphene_chunk_id', 'initial_id', 'graphene_id'])
+            translation_table = pd.DataFrame(
+                np.vstack(nodes_info), 
+                columns=['graphene_chunk_id', 'initial_id', 'graphene_id'],
+                dtype=np.uint64
+                )
             translation_table.drop(translation_table[translation_table.initial_id == 0].index, inplace=True)
+
+            # Drop duplicates that would be created from having multiple documents for the same chunk
+            translation_table = translation_table.drop_duplicates(subset=['graphene_chunk_id', 'initial_id'])
 
             ##### Query edges #####
 
@@ -346,11 +365,12 @@ def translate_edges_worker(db_host,
                                                       'u': 1,
                                                       'v': 1,
                                                       'merge_score': 1}))
-            except:
+            except QUERY_TOO_BIG:
+                logging.warning(f'Chunk {chunk_coord}: bt_from query too large, splitting per chunk')
                 query_bt_from = []
                 for chunk in chunk_ids[1:]:
                     query_bt_from += list(edges_coll.find({'$and':[{'u':{'$in': main_chunk_frag_ids}}, 
-                                                                   {'v':{'$in': translation_table.loc[translation_table.graphene_chunk_id == chunk].initial_id.to_list()}}]},
+                                                                   {'v':{'$in': translation_table.loc[translation_table.graphene_chunk_id.eq(chunk)].initial_id.to_list()}}]},
                                                           {'_id': 0,
                                                            'u': 1,
                                                            'v': 1,
@@ -364,10 +384,11 @@ def translate_edges_worker(db_host,
                                                     'u': 1,
                                                     'v': 1,
                                                     'merge_score': 1}))
-            except:
+            except QUERY_TOO_BIG:
+                logging.warning(f'Chunk {chunk_coord}: bt_to query too large, splitting per chunk')
                 query_bt_to = []
                 for chunk in chunk_ids[1:]:
-                    query_bt_to += list(edges_coll.find({'$and':[{'u':{'$in': translation_table.loc[translation_table.graphene_chunk_id == chunk].initial_id.to_list()}}, 
+                    query_bt_to += list(edges_coll.find({'$and':[{'u':{'$in': translation_table.loc[translation_table.graphene_chunk_id.eq(chunk)].initial_id.to_list()}}, 
                                                                  {'v':{'$in': main_chunk_frag_ids}}]},
                                                         {'_id': 0,
                                                          'u': 1,
@@ -377,6 +398,10 @@ def translate_edges_worker(db_host,
             # Edges in chunk
             # in_chunk: edges between supervoxels within a chunk
             in_edges_df = pd.DataFrame(query_in, columns=['u', 'v', 'merge_score'])
+            in_edges_df['u'] = in_edges_df['u'].astype(np.uint64)
+            in_edges_df['v'] = in_edges_df['v'].astype(np.uint64)
+            in_edges_df['merge_score'] = in_edges_df['merge_score'].astype(float)
+
             in_edges_df = in_edges_df.merge(translation_table.loc[translation_table.graphene_chunk_id == main_chunk_id], 'left', left_on='u', right_on='initial_id') \
                                 .drop(columns='initial_id') \
                                 .rename(columns={'graphene_chunk_id': 'u_graphene_chunk_id', 'graphene_id': 'u_graphene_id'})
@@ -387,33 +412,54 @@ def translate_edges_worker(db_host,
             in_chunk_edges = Edges(*in_edges_df[['u_graphene_id', 'v_graphene_id']].to_numpy(dtype=np.uint64).T)
             in_chunk_edges.affinities = (1.0 - in_edges_df['merge_score']).to_numpy(np.float32)
 
-            # If there is a duplicated initial ID, it means it exists in two chunks
-            # In that case, we don't consider it for between edges and create a cross edge from scratch
-            # Each side of the split fragment is contained in in_chunk edges
-
-            split_fragments = translation_table.loc[translation_table.initial_id.duplicated()].copy()
-            translation_table = translation_table.loc[~translation_table.initial_id.duplicated()]
+            # If there is a duplicated initial ID, it means it exists in two chunks (split fragment).
+            # Each piece is translated to a different graphene ID, linked later by cross edges.
+            # For split_fragments, we want to keep all duplicates to later build the cross edges
+            # linking the graphene IDs that were created from these duplicates
+            split_fragments = translation_table.loc[translation_table.initial_id.duplicated(keep=False)].copy()
 
             # Edges between chunks
             # between_chunks: edges between supervoxels across chunks
-            bt_edges_df = pd.DataFrame(query_bt_from + query_bt_to,columns=['u', 'v', 'merge_score'])
-            bt_edges_df = bt_edges_df[~bt_edges_df.isin(split_fragments.initial_id)]
+            main_lut = translation_table.loc[translation_table.graphene_chunk_id == main_chunk_id]
+            adj_lut = translation_table.loc[translation_table.graphene_chunk_id != main_chunk_id]
 
-            bt_edges_df = bt_edges_df.merge(translation_table, 'left', left_on='u', right_on='initial_id') \
-                                .drop(columns='initial_id') \
-                                .rename(columns={'graphene_chunk_id': 'u_graphene_chunk_id', 'graphene_id': 'u_graphene_id'})
-            bt_edges_df = bt_edges_df.merge(translation_table, 'left', left_on='v', right_on='initial_id') \
-                                .drop(columns='initial_id') \
-                                .rename(columns={'graphene_chunk_id': 'v_graphene_chunk_id', 'graphene_id': 'v_graphene_id'})
+            # Orient every edge as (u: main chunk side, v: adjacent chunk side)
+            bt_from_df = pd.DataFrame(query_bt_from, columns=['u', 'v', 'merge_score'])
+            bt_to_df = pd.DataFrame(query_bt_to, columns=['u', 'v', 'merge_score']).rename(columns={'u': 'v', 'v': 'u'})
+            bt_edges_df = pd.concat([bt_from_df, bt_to_df], ignore_index=True)
+            bt_edges_df['u'] = bt_edges_df['u'].astype(np.uint64)
+            bt_edges_df['v'] = bt_edges_df['v'].astype(np.uint64)
+            bt_edges_df['merge_score'] = bt_edges_df['merge_score'].astype(float)
+
+            # u -> its graphene ID in the main chunk (unique per chunk)
+            bt_edges_df = bt_edges_df.merge(main_lut[['initial_id', 'graphene_id']]
+                                                .rename(columns={'initial_id': 'u', 'graphene_id': 'u_graphene_id'}),
+                                            'inner', on='u')
+            # v -> its graphene ID in each adjacent chunk it lives in
+            # If v is split across several adjacent chunks, the edge is fanned out to every piece
+            bt_edges_df = bt_edges_df.merge(adj_lut.rename(columns={'initial_id': 'v',
+                                                                    'graphene_id': 'v_graphene_id',
+                                                                    'graphene_chunk_id': 'v_chunk'}),
+                                            'inner', on='v')
+
+            # Drop edges already represented as in_chunk edges in some chunk:
+            # - v also lives in the main chunk -> in_chunk edge of the main chunk
+            # - u also lives in v's chunk      -> in_chunk edge of that adjacent chunk
+            v_in_main = bt_edges_df.v.isin(main_lut.initial_id).to_numpy()
+            u_in_v_chunk = pd.MultiIndex.from_frame(bt_edges_df[['u', 'v_chunk']]) \
+                                .isin(pd.MultiIndex.from_frame(adj_lut[['initial_id', 'graphene_chunk_id']]))
+            bt_edges_df = bt_edges_df[~(v_in_main | u_in_v_chunk)] \
+                                .drop_duplicates(subset=['u_graphene_id', 'v_graphene_id'])
 
             between_chunk_edges = Edges(*bt_edges_df[['u_graphene_id', 'v_graphene_id']].to_numpy(dtype=np.uint64).T)
             between_chunk_edges.affinities = (1.0 - bt_edges_df['merge_score']).to_numpy(np.float32)
 
             # Edges cross chunk
             # cross_chunk: edges between parts of the same supervoxel before chunking, split across chunks
-            cross_edges_df = split_fragments.loc[split_fragments.graphene_chunk_id != main_chunk_id] \
-                                    .merge(split_fragments.loc[split_fragments.graphene_chunk_id == main_chunk_id], 'left', left_on='initial_id', right_on='initial_id') \
-                                    .rename(columns={'graphene_id_x': 'v_graphene_id', 'graphene_id_y': 'u_graphene_id'})
+            cross_edges_df = split_fragments.loc[split_fragments.graphene_chunk_id == main_chunk_id] \
+                                    .merge(split_fragments.loc[split_fragments.graphene_chunk_id != main_chunk_id], 
+                                           'inner', left_on='initial_id', right_on='initial_id') \
+                                    .rename(columns={'graphene_id_x': 'u_graphene_id', 'graphene_id_y': 'v_graphene_id'})
 
             cross_chunk_edges = Edges(*cross_edges_df[['u_graphene_id', 'v_graphene_id']].to_numpy(dtype=np.uint64).T)
             cross_chunk_edges.affinities = np.repeat(np.float32('inf'), len(cross_edges_df))
@@ -424,19 +470,19 @@ def translate_edges_worker(db_host,
                     EDGE_TYPES.between_chunk: between_chunk_edges,
                     EDGE_TYPES.cross_chunk: cross_chunk_edges
                             }
-            end = time.time()
 
-            put_chunk_edges(edges_dir_cloud, 
-                            chunk_coord[::-1], # x,y,z
-                            edges_proto_d, 
-                            compression_level=22)
+            if upload:
+                put_chunk_edges(edges_dir_cloud, 
+                                chunk_coord[::-1], # x,y,z
+                                edges_proto_d, 
+                                compression_level=22)
 
             if write_local:      
                 logging.info('WRITE')
                 write_chunk_edges_local(edges_dir_local, 
                                         chunk_coord[::-1], # x,y,z
                                         edges_proto_d, 
-                                        compression_level = 22)
+                                        compression_level=22)
 
             # Write document to keep track of blocks done
             document = {
