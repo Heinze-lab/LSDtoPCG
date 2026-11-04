@@ -48,7 +48,8 @@ def upload_components_chunkwise(
                                 start_over=False,
                                 edges_dir_cloud='edges',
                                 components_dir_cloud='components',
-                                keep_datastack_progress=False
+                                keep_datastack_progress=False,
+                                isolate_boundary_chunks=0
                                ):
     '''
     Start workers in parallel using multiprocessing. Workers compute and upload components per chunk by thresholding edges based on their affinity score. Components can be isolated from each other, either all or based on a metric (not yet implemented).
@@ -112,6 +113,16 @@ def upload_components_chunkwise(
         components_dir_cloud (``str``):
         
             Name of the components directory in the cloud bucket. "components" by default.
+
+        keep_datastack_progress (``bool``):
+
+            True: Edges from a dedicated database will be used to compute connected_components. This requires having ran download_components_progress.py.
+            False: Will threshold edges to determine connected_components.
+
+        isolate_boundary_chunks (``int``):
+
+            Number of chunks to isolate at the boundaries. These chunks will be isolated from their neighbors (group_size=1) but still processed.
+            All other chunks will be processed using group_size. 0 by default, boundary chunks are processed like the rest.
     '''
 
     # Variables
@@ -164,7 +175,9 @@ def upload_components_chunkwise(
                db_name,
                chunks_to_cut,
                group_size,
-               keep_datastack_progress
+               keep_datastack_progress,
+               n_chunks,
+               isolate_boundary_chunks
               ] for chunk_coord in chunk_list]
 
     try:
@@ -203,7 +216,9 @@ def connected_components_to_cloud_worker(chunk_coord,
                                          db_name,
                                          chunks_to_cut,
                                          group_size,
-                                         keep_datastack_progress
+                                         keep_datastack_progress,
+                                         n_chunks,
+                                         isolate_boundary_chunks
                                         ):
     '''
     Worker script. Computes connected components by filtering edges based on an affinity threshold.
@@ -241,6 +256,20 @@ def connected_components_to_cloud_worker(chunk_coord,
         group_size (``int``):
             
             Number of chunks to group together in each dimension when chunks are being isolated.
+        
+        keep_datastack_progress (``bool``):
+
+            True: Edges from a dedicated database will be used to compute connected_components. This requires having ran download_components_progress.py.
+            False: Will threshold edges to determine connected_components.
+        
+        n_chunks ([3] list of ``int``):
+
+            Number of chunks in XYZ dimensions.
+
+        isolate_boundary_chunks (``int``):
+
+            Number of chunks to isolate at the boundaries. These chunks will be isolated from their neighbors (group_size=1) but still processed.
+            All other chunks will be processed using group_size. 0 by default, boundary chunks are processed like the rest.
     '''
     
     # Variables
@@ -249,15 +278,24 @@ def connected_components_to_cloud_worker(chunk_coord,
     info = db['components_info']
     bits_per_chunk_dim = db['info_ingest'].find_one({'task': 'supervoxels'}, {'spatial_bits':1})['spatial_bits']
     main_chunk = np.array(chunk_coord, dtype=int) # xyz
-    
+
     # Check if chunk was processed
     if check_block(info, main_chunk):
         print(f'chunk_coord: {chunk_coord} skipped')
         return False
-        
-    # Obtain adjacent chunks to include
-    adj_chunk_list = get_adjacent_chunk_coords(main_chunk, chunks_to_cut, group_size)
-    
+
+    # Check if this chunk should be isolated from neighbors
+    def is_interior(c):
+        return np.all((c >= isolate_boundary_chunks) & (c < n_chunks - isolate_boundary_chunks), axis=-1)
+
+    if not is_interior(main_chunk):
+        gp_size = 1
+        adj_chunk_list = np.empty((0, 3), dtype=int)   # fully isolated
+    else:
+        gp_size = group_size
+        adj_chunk_list = get_adjacent_chunk_coords(main_chunk, chunks_to_cut, gp_size)
+        adj_chunk_list = adj_chunk_list[is_interior(adj_chunk_list)]
+
     # Obtain all edges crossing into main chunk from any adjacent chunk considered
     edges, scores = get_main_chunk_edges(edges_dir, main_chunk, adj_chunk_list, bits_per_chunk_dim)
 
@@ -314,6 +352,7 @@ def connected_components_to_cloud_worker(chunk_coord,
                 'graphene_chunk_coord': main_chunk.tolist(), # xyz
                 'threshold': edges_threshold,
                 'no_components': not components,
+                'group_size': int(gp_size),
                 'time': time.time()
                 }
     info.insert_one(document)
