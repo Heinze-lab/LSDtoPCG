@@ -32,9 +32,10 @@ def supervoxel_to_graphene_blockwise(fragments_file,
                                      chunk_voxel_size,
                                      cloudvolume_provenance,
                                      num_workers,
-                                     overwrite = False,
-                                     start_over = False,
-                                     supervoxels_dir = 'fragments'
+                                     overwrite=False,
+                                     start_over=False,
+                                     supervoxels_dir='fragments',
+                                     upload=True
                                     ):
 
     '''
@@ -93,9 +94,6 @@ def supervoxel_to_graphene_blockwise(fragments_file,
     client = pymongo.MongoClient(db_host)
     db = client[db_name]
     
-    cf = CloudFiles(cloudpath)
-    supervoxels_dir = '/'.join([cf.cloudpath, supervoxels_dir])
-    
     if 'blocks_translated' not in db.list_collection_names():
         blocks_translated = db['blocks_translated']
         blocks_translated.create_index(
@@ -103,57 +101,70 @@ def supervoxel_to_graphene_blockwise(fragments_file,
                   name='block_id')
     elif start_over:
         db.drop_collection('blocks_translated')
-        db.drop_collection('ids_to_graphene')
         blocks_translated = db['blocks_translated']
         blocks_translated.create_index(
                                        [('block_id', pymongo.ASCENDING)],
                                        name = 'block_id')
     else:
         blocks_translated = db['blocks_translated']
-    
-    # Check if volume already exists at destination
-    if cf.isdir(supervoxels_dir):
-        if overwrite:
-            print(f'Fragments already exist at path {cloudpath}')
-            print('Overlapping fragments volume will be overwritten')
-        else:
-            raise RuntimeError(f'Fragments already exist at path {cloudpath}')
+
+    if 'ids_to_graphene' not in db.list_collection_names():
+        ids_to_graphene = db['ids_to_graphene']
+        ids_to_graphene.create_index([('graphene_chunk_id', pymongo.ASCENDING)], unique=True)
+    elif start_over:
+        db.drop_collection('ids_to_graphene')
+        ids_to_graphene = db['ids_to_graphene']
+        ids_to_graphene.create_index([('graphene_chunk_id', pymongo.ASCENDING)], unique=True)
 
     # Initiate CloudVolume object
-    try:
-        logging.info('Volume will be uploaded to the cloud')
-        voxel_offset = (fragments.roi.get_begin()//fragments.voxel_size)[::-1]
-        logging.info(f'Initializing CloudVolume with voxel offset: {voxel_offset}')
-        destination_chunk_size = np.array(chunk_size)[::-1]/2/np.array(fragments.voxel_size)[::-1] # xyz
+    if upload:
+        # Check if volume already exists at destination
+        cf = CloudFiles(cloudpath)
+        supervoxels_dir = '/'.join([cf.cloudpath, supervoxels_dir])
+        if cf.isdir(supervoxels_dir):
+            if overwrite:
+                print(f'Fragments already exist at path {cloudpath}')
+                print('Overlapping fragments volume will be overwritten')
+            else:
+                raise RuntimeError(f'Fragments already exist at path {cloudpath}')
+            
+        try:
+            logging.info('Volume will be uploaded to the cloud')
+            voxel_offset = (fragments.roi.get_begin()//fragments.voxel_size)[::-1]
+            logging.info(f'Initializing CloudVolume with voxel offset: {voxel_offset}')
+            destination_chunk_size = np.array(chunk_size)[::-1]/2/np.array(fragments.voxel_size)[::-1] # xyz
 
-        info = CloudVolume.create_new_info(
-                               num_channels = 1,
-                               layer_type = 'segmentation',
-                               data_type = 'uint64',
-                               encoding = 'compressed_segmentation',
-                               resolution = fragments.voxel_size[::-1], # x,y,z voxel_size
-                               voxel_offset = voxel_offset, # x,y,z offset in voxel
-                               mesh = 'mesh',
-                               chunk_size = destination_chunk_size,
-                               volume_size = fragments.shape[::-1]) # x,y,z shape in voxel
+            info = CloudVolume.create_new_info(
+                                num_channels = 1,
+                                layer_type = 'segmentation',
+                                data_type = 'uint64',
+                                encoding = 'compressed_segmentation',
+                                resolution = fragments.voxel_size[::-1], # x,y,z voxel_size
+                                voxel_offset = voxel_offset, # x,y,z offset in voxel
+                                mesh = 'mesh',
+                                chunk_size = destination_chunk_size,
+                                volume_size = fragments.shape[::-1]) # x,y,z shape in voxel
 
-        vol = CloudVolume(supervoxels_dir, 
-                          info = info, 
-                          fill_missing = False,
-                          parallel = False,
-                          progress = False)
+            vol = CloudVolume(supervoxels_dir, 
+                            info = info, 
+                            fill_missing = False,
+                            parallel = False,
+                            progress = False)
 
-        vol.provenance.description = cloudvolume_provenance
-        vol.commit_info()
-        vol.commit_provenance()
-        logging.info(f'CloudVolume inialized at path: {supervoxels_dir}')
+            vol.provenance.description = cloudvolume_provenance
+            vol.commit_info()
+            vol.commit_provenance()
+            logging.info(f'CloudVolume inialized at path: {supervoxels_dir}')
 
-    except Exception as e:
-        print(f'Error: {e}')
-        traceback.print_exc()
-        sys.exit()
+        except Exception as e:
+            print(f'Error: {e}')
+            traceback.print_exc()
+            sys.exit()
 
-    logging.info(f'Volume bounds: {vol.bounds}') 
+        logging.info(f'Volume bounds: {vol.bounds}') 
+    else:
+        vol = None
+
     logging.info(f'Starting nodes translation with chunk size: {chunk_size}') 
     
     # Start blockwise translation and upload
@@ -168,7 +179,8 @@ def supervoxel_to_graphene_blockwise(fragments_file,
                                                                         vol,
                                                                         db_host,
                                                                         db_name,
-                                                                        num_workers),
+                                                                        num_workers,
+                                                                        upload),
                         check_function = lambda b: check_block(
                                                         blocks_translated,
                                                         b),
@@ -198,7 +210,8 @@ def upload_supervoxels_worker(fragments_file,
                               vol,
                               db_host,
                               db_name,
-                              num_workers
+                              num_workers,
+                              upload=True
                              ):
 
     '''
@@ -280,13 +293,14 @@ def upload_supervoxels_worker(fragments_file,
             graphene_data = replace_values(data, frag_ids, new_ids, inplace = False)
                 
             # Upload data
-            try:
-                z1,y1,x1 = block.read_roi.get_begin()//fragments.voxel_size 
-                z2,y2,x2 = block.read_roi.get_end()//fragments.voxel_size
-                vol[x1:x2, y1:y2, z1:z2] = np.transpose(graphene_data, (2,1,0)) # zyx to xyz
-            except Exception as e:
-                print(f'Error: {e}')
-                traceback.print_exc()
+            if upload:
+                try:
+                    z1,y1,x1 = block.read_roi.get_begin()//fragments.voxel_size 
+                    z2,y2,x2 = block.read_roi.get_end()//fragments.voxel_size
+                    vol[x1:x2, y1:y2, z1:z2] = np.transpose(graphene_data, (2,1,0)) # zyx to xyz
+                except Exception as e:
+                    print(f'Error: {e}')
+                    traceback.print_exc()
     
             document = {
                     'num_cpus': num_workers,
