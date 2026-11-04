@@ -80,7 +80,7 @@ def get_chunk_list(fragments,
             for iz, z in enumerate(range(n_chunks[0])):
                 chunk_list.append((x,y,z))
     
-    return chunk_list, n_chunks
+    return chunk_list, n_chunks[::-1]
 
 
 def get_chunk_coord(fragments, chunk_roi, chunk_size, total_roi = None):
