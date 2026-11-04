@@ -23,7 +23,7 @@ def upload_image_data_blockwise(image_data_file,
                                 db_name,
                                 cloudvolume_provenance,
                                 num_workers,
-                                force_upload = False,
+                                overwrite=False,
                                 destination_chunk_voxel_size=[250,250,25],
                                 image_data_dir = 'image_data'
                                ):
@@ -57,7 +57,7 @@ def upload_image_data_blockwise(image_data_file,
         
             Number of workers to distribute the tasks to.
             
-        force_upload (``bool``):
+        overwrite (``bool``):
             
             True: Will upload even if a volume is present at destination.
             False: Will interrupt process if a volume is present a destination.
@@ -78,7 +78,7 @@ def upload_image_data_blockwise(image_data_file,
     # Check if volume already exists at destination
     cf = CloudFiles(cloudpath)
     if cf.isdir(image_data_dir):
-        if force_upload:
+        if overwrite:
             print(f'Image data already exists at path {cloudpath}')
             print('Overlapping image volume will be overwritten')
         else:
@@ -212,18 +212,14 @@ def upload_image_data_worker(image_data_file,
             mask_data = open_ds(image_data_file, 'mask')
             mask_data = mask_data.to_ndarray(block.read_roi)
 
-            data = data * mask_data
+            data = data * (mask_data > 0).astype(np.uint8)
             
             # Upload data
             try:
                 z1,y1,x1 = block.read_roi.get_begin()//image_data.voxel_size
                 z2,y2,x2 = block.read_roi.get_end()//image_data.voxel_size
                 vol[x1:x2, y1:y2, z1:z2] = np.transpose(data, (2,1,0))
-            except Exception as e:
-                print(f'Error: {e}')
-                traceback.print_exc()
-    
-            document = {
+                document = {
                     'num_cpus': num_workers,
                     'block_id': block.block_id,
                     'read_roi': (block.read_roi.get_begin(),
@@ -236,8 +232,26 @@ def upload_image_data_worker(image_data_file,
                     'duration': time.time() - start
                        }
             
-            blocks_image_uploaded.insert_one(document)
-
+                blocks_image_uploaded.insert_one(document)
+            except Exception as e:
+                print(f'Error: {e}')
+                traceback.print_exc()
+                document = {
+                    'num_cpus': num_workers,
+                    'block_id': block.block_id,
+                    'read_roi': (block.read_roi.get_begin(),
+                                 block.read_roi.get_shape()
+                                ),
+                    'write_roi': (block.write_roi.get_begin(),
+                                  block.write_roi.get_shape()
+                                 ),
+                    'start': start,
+                    'duration': time.time() - start,
+                    'error': str(e)
+                           }
+                blocks_image_uploaded.insert_one(document)
+                raise
+    
 
 def check_block(blocks_image_uploaded, block):
 
