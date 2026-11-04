@@ -56,7 +56,7 @@ def get_chunk_ids_from_coords(coords: np.ndarray, bits_per_chunk_dim, layer_bits
 
 def get_adjacent_chunk_coords(chunk_coords, 
                               chunks_to_cut,
-                              group_size=1):
+                              gp_size=1):
     
     '''
     Produces list of possible chunks adjacent to the chunk being processed, which are not to be isolated. 
@@ -72,7 +72,7 @@ def get_adjacent_chunk_coords(chunk_coords,
         
             List of chunk coordinates to be isolated from neighbors.
             
-        group_size (``int``):
+        gp_size (``int``):
         
             Number of chunks to group together in each dimension. Default to 1: chunks are not to be grouped with neighbors.
             The group will override chunks_to_cut.
@@ -93,7 +93,7 @@ def get_adjacent_chunk_coords(chunk_coords,
     if len(chunks_to_cut) == 0:
         return adj_chunk_coords_list
     
-    chunk_groups = adj_chunk_coords_list // group_size
+    chunk_groups = adj_chunk_coords_list // gp_size
 
     # Is chunk to be isolated?
     if np.any(np.all(chunk_coords == np.array(chunks_to_cut), 1)):
@@ -104,7 +104,7 @@ def get_adjacent_chunk_coords(chunk_coords,
         mask = np.array([np.logical_not(np.any(np.all(chunk == chunks_to_cut, 1))) for chunk in adj_chunk_coords_list])
 
     # Always keep all chunks in the same group connected to each other
-    main_group = np.array(chunk_coords) // group_size
+    main_group = np.array(chunk_coords) // gp_size
     mask = mask | np.all(chunk_groups == main_group, 1)
         
     return adj_chunk_coords_list[mask]
