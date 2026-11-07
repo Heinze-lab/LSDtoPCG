@@ -10,7 +10,7 @@ build/
 daisy_logs/
 
 segtopcg/*.json
-*.txt
+text.txt
 utils/utils_skeletons.py
 
 __pycache__
